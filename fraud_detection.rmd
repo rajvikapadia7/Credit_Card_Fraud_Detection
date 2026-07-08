@@ -1,0 +1,410 @@
+---
+title: "Credit Card Fraud Detection - SQL & R Analytics"
+author: "Rajvi Kapadia"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE
+)
+
+library(DBI)
+library(RSQLite)
+library(tidyverse)
+library(skimr)
+library(pROC)
+
+```
+
+```{r load-data}
+
+transaction <- read_csv(
+  "train_transaction.csv",
+  col_select = c(TransactionID, TransactionAmt, isFraud, ProductCD,
+                 card4, card6, TransactionDT, addr1, addr2, dist1),
+  show_col_types = FALSE
+)
+
+identity <- read_csv(
+  "train_identity.csv",
+  col_select = c(TransactionID, DeviceType, DeviceInfo),
+  show_col_types = FALSE
+)
+
+```
+
+## SQL Analytics Layer
+
+```{r sql-setup}
+# Create SQLite database and load tables
+con <- dbConnect(SQLite(), "fraud_database.sqlite")
+dbWriteTable(con, "transactions", transaction, overwrite = TRUE)
+dbWriteTable(con, "identity", identity, overwrite = TRUE)
+```
+
+```{r sql-1-join}
+# Query 1: Match transactions to identity records
+q1 <- dbGetQuery(con, "
+  SELECT t.TransactionID, t.TransactionAmt, t.isFraud,
+         i.DeviceType, i.DeviceInfo
+  FROM transactions t
+  LEFT JOIN identity i ON t.TransactionID = i.TransactionID
+  LIMIT 10
+")
+q1
+```
+
+```{r sql-2-fraud-by-device}
+# Query 2: Fraud rate by device type
+q2 <- dbGetQuery(con, "
+  SELECT i.DeviceType,
+         COUNT(*) AS total_transactions,
+         SUM(t.isFraud) AS fraud_count,
+         ROUND(SUM(t.isFraud) * 100.0 / COUNT(*), 2) AS fraud_rate_pct
+  FROM transactions t
+  LEFT JOIN identity i ON t.TransactionID = i.TransactionID
+  GROUP BY i.DeviceType
+  ORDER BY fraud_rate_pct DESC
+")
+q2
+```
+
+```{r sql-3-risk-tiers}
+# Query 3: Bucket transactions into risk tiers by amount
+q3 <- dbGetQuery(con, "
+  SELECT 
+    CASE 
+      WHEN TransactionAmt < 50  THEN 'Low (<50)'
+      WHEN TransactionAmt < 200 THEN 'Medium (50-200)'
+      WHEN TransactionAmt < 500 THEN 'High (200-500)'
+      ELSE 'Very High (500+)'
+    END AS risk_tier,
+    COUNT(*) AS total,
+    SUM(isFraud) AS fraud_count,
+    ROUND(SUM(isFraud) * 100.0 / COUNT(*), 2) AS fraud_rate_pct
+  FROM transactions
+  GROUP BY risk_tier
+  ORDER BY fraud_rate_pct DESC
+")
+q3
+```
+
+```{r sql-4-above-average}
+# Query 4: Flag transactions above the overall average spend
+q4 <- dbGetQuery(con, "
+  SELECT TransactionID, TransactionAmt, isFraud,
+         ROUND((SELECT AVG(TransactionAmt) FROM transactions), 2) AS avg_amt,
+         CASE WHEN TransactionAmt > (SELECT AVG(TransactionAmt) FROM transactions)
+              THEN 'Above Average' ELSE 'Below Average'
+         END AS spend_flag
+  FROM transactions
+  LIMIT 10
+")
+q4
+```
+
+```{r sql-5-window}
+# Query 5: Cumulative fraud count over transaction time
+q5 <- dbGetQuery(con, "
+  SELECT TransactionID, TransactionDT, isFraud,
+         SUM(isFraud) OVER (ORDER BY TransactionDT) AS cumulative_fraud_count
+  FROM transactions
+  ORDER BY TransactionDT
+  LIMIT 10
+")
+q5
+```
+
+```{r sql-6-cte}
+# Query 6: High-risk device AND high transaction amount combos
+q6 <- dbGetQuery(con, "
+  WITH high_risk_devices AS (
+    SELECT t.TransactionID, t.TransactionAmt, t.isFraud, i.DeviceType
+    FROM transactions t
+    LEFT JOIN identity i ON t.TransactionID = i.TransactionID
+    WHERE i.DeviceType = 'mobile'
+  )
+  SELECT DeviceType,
+         COUNT(*) AS total,
+         SUM(isFraud) AS fraud_count,
+         ROUND(AVG(TransactionAmt), 2) AS avg_amt,
+         ROUND(SUM(isFraud) * 100.0 / COUNT(*), 2) AS fraud_rate_pct
+  FROM high_risk_devices
+  WHERE TransactionAmt > 200
+  GROUP BY DeviceType
+")
+q6
+```
+
+```{r sql-7-view}
+# Query 7: Reusable suspicious transactions view
+dbExecute(con, "DROP VIEW IF EXISTS suspicious_transactions")
+
+dbExecute(con, "
+  CREATE VIEW suspicious_transactions AS
+  SELECT t.TransactionID, t.TransactionAmt, t.isFraud,
+         i.DeviceType, i.DeviceInfo
+  FROM transactions t
+  LEFT JOIN identity i ON t.TransactionID = i.TransactionID
+  WHERE t.TransactionAmt > 500 AND t.isFraud = 1
+")
+
+q7 <- dbGetQuery(con, "SELECT * FROM suspicious_transactions LIMIT 10")
+q7
+```
+
+## Data Preparation & EDA
+
+```{r merge}
+
+merged <- transaction %>%
+  left_join(identity, by="TransactionID")
+
+dim(merged)
+
+```
+
+```{r eda-overview}
+# High-level summary of key columns
+merged %>%
+  select(isFraud, TransactionAmt, ProductCD, card4, card6, DeviceType) %>%
+  skim()
+```
+
+```{r eda-class-imbalance}
+# How imbalanced is the fraud label?
+merged %>%
+  count(isFraud) %>%
+  mutate(pct = round(n / sum(n) * 100, 2))
+```
+
+```{r eda-fraud-by-product}
+# Fraud rate by product category
+merged %>%
+  group_by(ProductCD) %>%
+  summarise(
+    total = n(),
+    fraud_count = sum(isFraud),
+    fraud_rate = round(fraud_count / total * 100, 2)
+  ) %>%
+  arrange(desc(fraud_rate))
+```
+
+```{r eda-fraud-by-card}
+# Fraud rate by card type
+merged %>%
+  group_by(card4) %>%
+  summarise(
+    total = n(),
+    fraud_count = sum(isFraud),
+    fraud_rate = round(fraud_count / total * 100, 2)
+  ) %>%
+  arrange(desc(fraud_rate))
+```
+
+## Feature Engineering
+
+```{r features}
+merged <- merged %>%
+  mutate(
+    # Time-based features
+    hour_of_day     = (TransactionDT / 3600) %% 24,
+    is_night        = ifelse(hour_of_day >= 22 | hour_of_day <= 6, 1, 0),
+    is_morning_peak = ifelse(hour_of_day >= 8 & hour_of_day <= 10, 1, 0),
+
+    # Amount-based features
+    amt_log         = log1p(TransactionAmt),
+    amt_ratio       = TransactionAmt / median(TransactionAmt, na.rm = TRUE),
+    is_high_amount  = ifelse(TransactionAmt > 500, 1, 0),
+    is_round_amount = ifelse(TransactionAmt %% 1 == 0, 1, 0),
+
+    # Identity and device features
+    no_identity     = ifelse(is.na(DeviceType), 1, 0),
+    is_mobile       = ifelse(!is.na(DeviceType) & DeviceType == "mobile", 1, 0),
+
+    # Product risk flag
+    is_product_c    = ifelse(ProductCD == "C", 1, 0),
+
+    # Target as factor for plots
+    isFraud_factor  = factor(isFraud, levels = c(0, 1), 
+                             labels = c("Legit", "Fraud"))
+  )
+```
+
+## Visualizations
+
+```{r viz-class-imbalance}
+merged %>%
+  count(isFraud_factor) %>%
+  ggplot(aes(x = isFraud_factor, y = n, fill = isFraud_factor)) +
+  geom_col() +
+  geom_text(aes(label = paste0(round(n/sum(n)*100, 1), "%")), 
+            vjust = -0.5, fontface = "bold") +
+  scale_fill_manual(values = c("Legit" = "#2196F3", "Fraud" = "#F44336")) +
+  labs(title = "Class Imbalance: Fraud vs Legitimate Transactions",
+       x = NULL, y = "Transaction Count") +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+```{r viz-amount-distribution}
+merged %>%
+  ggplot(aes(x = amt_log, fill = isFraud_factor)) +
+  geom_density(alpha = 0.5) +
+  scale_fill_manual(values = c("Legit" = "#2196F3", "Fraud" = "#F44336")) +
+  labs(title = "Transaction Amount Distribution (Log Scale)",
+       x = "Log Transaction Amount", y = "Density", fill = NULL) +
+  theme_minimal()
+```
+
+```{r viz-fraud-by-product}
+merged %>%
+  group_by(ProductCD) %>%
+  summarise(fraud_rate = round(mean(isFraud) * 100, 2)) %>%
+  ggplot(aes(x = reorder(ProductCD, fraud_rate), y = fraud_rate, 
+             fill = fraud_rate)) +
+  geom_col() +
+  geom_text(aes(label = paste0(fraud_rate, "%")), 
+            hjust = -0.2, fontface = "bold") +
+  scale_fill_gradient(low = "#90CAF9", high = "#F44336") +
+  coord_flip() +
+  labs(title = "Fraud Rate by Product Category",
+       x = "Product Code", y = "Fraud Rate (%)") +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+```{r viz-fraud-by-hour}
+merged %>%
+  group_by(hour = round(hour_of_day)) %>%
+  summarise(fraud_rate = mean(isFraud) * 100) %>%
+  ggplot(aes(x = hour, y = fraud_rate)) +
+  geom_line(color = "#F44336", linewidth = 1.2) +
+  geom_point(color = "#F44336", size = 2) +
+  labs(title = "Fraud Rate by Hour of Day",
+       x = "Hour (0 = Midnight)", y = "Fraud Rate (%)") +
+  theme_minimal()
+```
+
+```{r viz-device-fraud}
+merged %>%
+  mutate(device_label = case_when(
+    is.na(DeviceType)       ~ "No Identity Record",
+    DeviceType == "mobile"  ~ "Mobile",
+    DeviceType == "desktop" ~ "Desktop",
+    TRUE                    ~ "Other"
+  )) %>%
+  group_by(device_label) %>%
+  summarise(
+    total = n(),
+    fraud_rate = round(mean(isFraud) * 100, 2)
+  ) %>%
+  ggplot(aes(x = reorder(device_label, fraud_rate), y = fraud_rate, 
+             fill = fraud_rate)) +
+  geom_col() +
+  geom_text(aes(label = paste0(fraud_rate, "%")), 
+            hjust = -0.2, fontface = "bold") +
+  scale_fill_gradient(low = "#90CAF9", high = "#F44336") +
+  coord_flip() +
+  labs(title = "Fraud Rate by Device Type",
+       x = NULL, y = "Fraud Rate (%)") +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+## Logistic Regression Model
+
+```{r model-prep}
+model_data <- merged %>%
+  select(isFraud, amt_log, amt_ratio, is_round_amount,
+         is_night, is_morning_peak, is_high_amount,
+         no_identity, is_mobile, is_product_c) %>%
+  drop_na()
+
+nrow(model_data)
+```
+
+```{r model-train}
+# Train/test split: 80% train, 20% test
+set.seed(42)
+
+fraud_rows <- which(model_data$isFraud == 1)
+normal_rows <- which(model_data$isFraud == 0)
+
+
+train_idx <- c(
+  sample(fraud_rows, floor(length(fraud_rows)*0.8)),
+  sample(normal_rows, floor(length(normal_rows)*0.8))
+)
+
+
+train_data <- model_data[train_idx, ]
+test_data  <- model_data[-train_idx, ]
+
+# Fit logistic regression
+model <- glm(isFraud ~ ., data = train_data, family = binomial)
+summary(model)
+```
+
+```{r model-evaluate}
+# Predict probabilities on test set
+test_data$predicted_prob <- predict(model, newdata = test_data, 
+                                    type = "response")
+
+# ROC curve and AUC
+roc_obj <- roc(test_data$isFraud, test_data$predicted_prob)
+auc_val <- round(auc(roc_obj), 4)
+cat("AUC:", auc_val, "\n")
+```
+
+```{r viz-roc}
+# Plot ROC curve
+ggroc(roc_obj, color = "#F44336", linewidth = 1.2) +
+  geom_segment(aes(x = 1, xend = 0, y = 0, yend = 1),
+               linetype = "dashed", color = "grey50") +
+  annotate("text", x = 0.4, y = 0.2,
+           label = paste("AUC =", auc_val),
+           size = 5, fontface = "bold", color = "#F44336") +
+  labs(title = "ROC Curve — Logistic Regression Fraud Model",
+       x = "1 - Specificity", y = "Sensitivity") +
+  theme_minimal()
+```
+
+```{r viz-coefficients}
+
+coef_df <- data.frame(
+  term = names(coef(model))[-1],
+  estimate = exp(coef(model)[-1])
+)
+
+
+ggplot(coef_df,
+       aes(
+         x = reorder(term, estimate),
+         y = estimate
+       )) +
+  geom_point(size=3) +
+  geom_hline(
+    yintercept = 1,
+    linetype="dashed"
+  ) +
+  coord_flip() +
+  labs(
+    title="Odds Ratios — Logistic Regression",
+    x=NULL,
+    y="Odds Ratio"
+  ) +
+  theme_minimal()
+
+```
+
+
+```{r cleanup}
+
+dbDisconnect(con)
+```
