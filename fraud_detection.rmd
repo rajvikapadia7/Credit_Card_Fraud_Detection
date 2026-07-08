@@ -38,7 +38,7 @@ identity <- read_csv(
 
 ```
 
-## SQL Analytics Layer
+## SQL 
 
 ```{r sql-setup}
 # Create SQLite database and load tables
@@ -56,7 +56,7 @@ q1 <- dbGetQuery(con, "
   LEFT JOIN identity i ON t.TransactionID = i.TransactionID
   LIMIT 10
 ")
-q1
+knitr::kable(q1)
 ```
 
 ```{r sql-2-fraud-by-device}

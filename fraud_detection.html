@@ -11,7 +11,7 @@
 
 <meta name="author" content="Rajvi Kapadia" />
 
-<meta name="date" content="2026-07-07" />
+<meta name="date" content="2026-07-08" />
 
 <title>Credit Card Fraud Detection - SQL &amp; R Analytics</title>
 
@@ -353,7 +353,7 @@ display: none;
 <h1 class="title toc-ignore">Credit Card Fraud Detection - SQL &amp; R
 Analytics</h1>
 <h4 class="author">Rajvi Kapadia</h4>
-<h4 class="date">2026-07-07</h4>
+<h4 class="date">2026-07-08</h4>
 
 </div>
 
@@ -370,8 +370,8 @@ identity &lt;- read_csv(
   col_select = c(TransactionID, DeviceType, DeviceInfo),
   show_col_types = FALSE
 )</code></pre>
-<div id="sql-analytics-layer" class="section level2">
-<h2>SQL Analytics Layer</h2>
+<div id="sql" class="section level2">
+<h2>SQL</h2>
 <pre class="r"><code># Create SQLite database and load tables
 con &lt;- dbConnect(SQLite(), &quot;fraud_database.sqlite&quot;)
 dbWriteTable(con, &quot;transactions&quot;, transaction, overwrite = TRUE)
@@ -384,29 +384,97 @@ q1 &lt;- dbGetQuery(con, &quot;
   LEFT JOIN identity i ON t.TransactionID = i.TransactionID
   LIMIT 10
 &quot;)
-q1</code></pre>
-<pre><code>##    TransactionID TransactionAmt isFraud DeviceType
-## 1        2987000           68.5       0       &lt;NA&gt;
-## 2        2987001           29.0       0       &lt;NA&gt;
-## 3        2987002           59.0       0       &lt;NA&gt;
-## 4        2987003           50.0       0       &lt;NA&gt;
-## 5        2987004           50.0       0     mobile
-## 6        2987005           49.0       0       &lt;NA&gt;
-## 7        2987006          159.0       0       &lt;NA&gt;
-## 8        2987007          422.5       0       &lt;NA&gt;
-## 9        2987008           15.0       0     mobile
-## 10       2987009          117.0       0       &lt;NA&gt;
-##                       DeviceInfo
-## 1                           &lt;NA&gt;
-## 2                           &lt;NA&gt;
-## 3                           &lt;NA&gt;
-## 4                           &lt;NA&gt;
-## 5  SAMSUNG SM-G892A Build/NRD90M
-## 6                           &lt;NA&gt;
-## 7                           &lt;NA&gt;
-## 8                           &lt;NA&gt;
-## 9                     iOS Device
-## 10                          &lt;NA&gt;</code></pre>
+knitr::kable(q1)</code></pre>
+<table>
+<colgroup>
+<col width="17%" />
+<col width="19%" />
+<col width="10%" />
+<col width="14%" />
+<col width="38%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th align="right">TransactionID</th>
+<th align="right">TransactionAmt</th>
+<th align="right">isFraud</th>
+<th align="left">DeviceType</th>
+<th align="left">DeviceInfo</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td align="right">2987000</td>
+<td align="right">68.5</td>
+<td align="right">0</td>
+<td align="left">NA</td>
+<td align="left">NA</td>
+</tr>
+<tr class="even">
+<td align="right">2987001</td>
+<td align="right">29.0</td>
+<td align="right">0</td>
+<td align="left">NA</td>
+<td align="left">NA</td>
+</tr>
+<tr class="odd">
+<td align="right">2987002</td>
+<td align="right">59.0</td>
+<td align="right">0</td>
+<td align="left">NA</td>
+<td align="left">NA</td>
+</tr>
+<tr class="even">
+<td align="right">2987003</td>
+<td align="right">50.0</td>
+<td align="right">0</td>
+<td align="left">NA</td>
+<td align="left">NA</td>
+</tr>
+<tr class="odd">
+<td align="right">2987004</td>
+<td align="right">50.0</td>
+<td align="right">0</td>
+<td align="left">mobile</td>
+<td align="left">SAMSUNG SM-G892A Build/NRD90M</td>
+</tr>
+<tr class="even">
+<td align="right">2987005</td>
+<td align="right">49.0</td>
+<td align="right">0</td>
+<td align="left">NA</td>
+<td align="left">NA</td>
+</tr>
+<tr class="odd">
+<td align="right">2987006</td>
+<td align="right">159.0</td>
+<td align="right">0</td>
+<td align="left">NA</td>
+<td align="left">NA</td>
+</tr>
+<tr class="even">
+<td align="right">2987007</td>
+<td align="right">422.5</td>
+<td align="right">0</td>
+<td align="left">NA</td>
+<td align="left">NA</td>
+</tr>
+<tr class="odd">
+<td align="right">2987008</td>
+<td align="right">15.0</td>
+<td align="right">0</td>
+<td align="left">mobile</td>
+<td align="left">iOS Device</td>
+</tr>
+<tr class="even">
+<td align="right">2987009</td>
+<td align="right">117.0</td>
+<td align="right">0</td>
+<td align="left">NA</td>
+<td align="left">NA</td>
+</tr>
+</tbody>
+</table>
 <pre class="r"><code># Query 2: Fraud rate by device type
 q2 &lt;- dbGetQuery(con, &quot;
   SELECT i.DeviceType,
